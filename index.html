@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sandworm Clash</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div class="title-block">
+        <h1>Sandworm Clash</h1>
+        <p>사막을 누비는 모래 벌레. 사막 동물을 모아 성장하세요.</p>
+      </div>
+    </header>
+    <div class="hudbar">
+      <div>Score: <span id="score">0</span></div>
+      <div>Best: <span id="best">0</span></div>
+      <button id="toggle">Start</button>
+    </div>
+    <div class="status" id="status">준비 완료. 클릭해서 목표 지점을 지정하세요.</div>
+
+    <section class="stage">
+      <canvas id="game" width="900" height="600" aria-label="Sandworm game"></canvas>
+      <div class="overlay" id="overlay">
+        <div class="card">
+          <h2>Sandworm Clash</h2>
+          <p>클릭한 위치로 이동합니다. 벽에 부딪히면 종료됩니다.</p>
+          <button id="play">Play</button>
+        </div>
+      </div>
+    </section>
+
+    
+  </main>
+
+  <script src="game.js"></script>
+</body>
+</html>
