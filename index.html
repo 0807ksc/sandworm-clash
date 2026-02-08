@@ -23,10 +23,13 @@
 
     <section class="stage">
       <canvas id="game" width="900" height="600" aria-label="Sandworm game"></canvas>
+      <div class="minimap">
+        <canvas id="minimap" width="220" height="150" aria-label="Mini map"></canvas>
+      </div>
       <div class="overlay" id="overlay">
         <div class="card">
           <h2>Sandworm Clash</h2>
-          <p>클릭한 위치로 이동합니다. 벽에 부딪히면 종료됩니다.</p>
+          <p>클릭 또는 방향키/WASD로 이동. Space 일시정지, R 재시작, F 전체화면.</p>
           <button id="play">Play</button>
         </div>
       </div>

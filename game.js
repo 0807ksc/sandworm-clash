@@ -6,10 +6,21 @@ const statusEl = document.getElementById('status');
 const overlay = document.getElementById('overlay');
 const playBtn = document.getElementById('play');
 const toggleBtn = document.getElementById('toggle');
+const minimapCanvas = document.getElementById('minimap');
+const minimapCtx = minimapCanvas ? minimapCanvas.getContext('2d') : null;
 
-const gridSize = 8;
-const wormRenderScale = 2.4;
-const creatureRenderScale = 9.6;
+const baseCellSize = 5;
+const wormUnitCells = 5;
+const unitPixelSize = baseCellSize * wormUnitCells;
+const gridSize = unitPixelSize;
+const wormRenderBlockCells = 1;
+const wormRenderScale = 1;
+const creatureRenderScale = 6;
+const spiceCollisionScale = 0.4;
+const debugCellOutline = false;
+const debugCellSize = unitPixelSize;
+const enemyTargetCount = 3;
+const gameplaySpeedMultiplier = 0.7;
 let viewWidth = canvas.width;
 let viewHeight = canvas.height;
 let worldWidth = canvas.width * 3;
@@ -51,13 +62,11 @@ const creatureTypes = [
 let running = false;
 let score = 0;
 let best = Number(localStorage.getItem('sandworm-best') || 0);
-let lastTime = 0;
 let stepTime = 110;
 let enemyStepTime = 140;
 let shake = 0;
 let touchId = null;
 let enemies = [];
-let lastEnemyTime = 0;
 let particles = [];
 let slowMoUntil = 0;
 let pointer = { x: canvas.width / 2, y: canvas.height / 2, active: false };
@@ -66,6 +75,10 @@ let camera = { x: 0, y: 0 };
 let statusUntil = 0;
 let statusSticky = false;
 let audioCtx = null;
+let simTime = 0;
+let playerAccum = 0;
+let enemyAccum = 0;
+let rafLastTime = 0;
 
 let dustParticles = [];
 
@@ -119,8 +132,11 @@ function resetGame() {
   score = 0;
   stepTime = 95;
   enemyStepTime = 120;
-  enemies = createEnemies(3);
-  lastEnemyTime = 0;
+  enemies = createEnemies(enemyTargetCount);
+  simTime = 0;
+  playerAccum = 0;
+  enemyAccum = 0;
+  rafLastTime = 0;
   slowMoUntil = 0;
   pointer.active = false;
   hasStarted = true;
@@ -143,22 +159,39 @@ function centerOf(cell) {
   };
 }
 
-function distSq(a, b) {
-  const dx = a.x - b.x;
-  const dy = a.y - b.y;
-  return dx * dx + dy * dy;
+function unitRect(cell) {
+  return {
+    x: cell.x * gridSize,
+    y: cell.y * gridSize,
+    w: unitPixelSize,
+    h: unitPixelSize,
+  };
 }
 
-function eatRadiusSq() {
-  const r = gridSize * wormRenderScale * 0.5 * 1.3;
-  return r * r;
+function spiceCollisionRect(cell) {
+  const size = gridSize * creatureRenderScale * spiceCollisionScale;
+  return {
+    x: cell.x * gridSize + (gridSize - size) / 2,
+    y: cell.y * gridSize + (gridSize - size) / 2,
+    w: size,
+    h: size,
+  };
+}
+
+function rectsOverlap(a, b) {
+  return a.x < b.x + b.w && a.x + a.w > b.x &&
+    a.y < b.y + b.h && a.y + a.h > b.y;
+}
+
+function unitsOverlap(a, b) {
+  return rectsOverlap(unitRect(a), unitRect(b));
 }
 
 function setStatus(message, ttlMs = 5000, sticky = false) {
   if (!statusEl) return;
   statusEl.textContent = message;
   statusSticky = sticky;
-  statusUntil = sticky ? Number.POSITIVE_INFINITY : performance.now() + ttlMs;
+  statusUntil = sticky ? Number.POSITIVE_INFINITY : simTime + ttlMs;
   statusEl.classList.remove('hidden');
 }
 
@@ -305,9 +338,7 @@ function step() {
 
   worm.unshift(head);
 
-  const headCenter = centerOf(head);
-  const r2 = eatRadiusSq();
-  const spiceIndex = spices.findIndex(sp => distSq(centerOf(sp), headCenter) <= r2);
+  const spiceIndex = spices.findIndex(sp => rectsOverlap(unitRect(head), spiceCollisionRect(sp)));
   if (spiceIndex !== -1) {
     const spice = spices.splice(spiceIndex, 1)[0];
     score += spice.type.value;
@@ -390,6 +421,9 @@ function drawBackground() {
 
 function drawSpice() {
   spices.forEach(spice => {
+    if (debugCellOutline) {
+      drawDebugRect(spiceCollisionRect(spice));
+    }
     const cx = spice.x * gridSize + gridSize / 2;
     const cy = spice.y * gridSize + gridSize / 2;
     ctx.save();
@@ -554,12 +588,43 @@ function drawSpice() {
   });
 }
 
+function getRenderedSegments(segments) {
+  if (!segments || segments.length === 0) return [];
+  const rendered = [
+    { x: segments[0].x * gridSize, y: segments[0].y * gridSize },
+  ];
+  for (let i = 1; i < segments.length; i++) {
+    const prevGrid = segments[i - 1];
+    const currGrid = segments[i];
+    const prevPos = rendered[i - 1];
+    const dx = currGrid.x - prevGrid.x;
+    const dy = currGrid.y - prevGrid.y;
+    const len = Math.hypot(dx, dy);
+    if (len === 0) {
+      rendered.push({ x: prevPos.x, y: prevPos.y });
+      continue;
+    }
+    const ux = dx / len;
+    const uy = dy / len;
+    rendered.push({
+      x: prevPos.x + ux * gridSize,
+      y: prevPos.y + uy * gridSize,
+    });
+  }
+  return rendered;
+}
+
 function drawWorm() {
+  const rendered = getRenderedSegments(worm);
   worm.forEach((seg, idx) => {
-    const x = seg.x * gridSize;
-    const y = seg.y * gridSize;
+    if (debugCellOutline) {
+      drawDebugCell(seg.x, seg.y);
+    }
+    const renderSeg = rendered[idx];
+    const x = renderSeg.x;
+    const y = renderSeg.y;
     const isHead = idx === 0;
-    const size = gridSize * wormRenderScale;
+    const size = gridSize * wormRenderBlockCells * wormRenderScale;
     const cx = x + gridSize / 2;
     const cy = y + gridSize / 2;
     const img = getImage(isHead ? 'wormHeadPlayer' : 'wormBodyPlayer');
@@ -680,7 +745,7 @@ function drawEdgeWarning() {
   ctx.save();
   ctx.strokeStyle = 'rgba(220, 50, 40, 0.9)';
   ctx.lineWidth = 6;
-  const now = performance.now();
+  const now = simTime;
   let warned = false;
   if (hx < margin) {
     ctx.beginPath();
@@ -733,11 +798,16 @@ function drawParticles() {
 }
 
 function drawEnemy(enemy) {
+  const rendered = getRenderedSegments(enemy.segments);
   enemy.segments.forEach((seg, idx) => {
-    const x = seg.x * gridSize;
-    const y = seg.y * gridSize;
+    if (debugCellOutline) {
+      drawDebugCell(seg.x, seg.y);
+    }
+    const renderSeg = rendered[idx];
+    const x = renderSeg.x;
+    const y = renderSeg.y;
     const isHead = idx === 0;
-    const size = gridSize * wormRenderScale;
+    const size = gridSize * wormRenderBlockCells * wormRenderScale;
     const cx = x + gridSize / 2;
     const cy = y + gridSize / 2;
     const img = getImage(isHead ? 'wormHeadEnemy' : 'wormBodyEnemy');
@@ -768,6 +838,65 @@ function drawEnemy(enemy) {
   });
 }
 
+function drawDebugCell(cellX, cellY) {
+  const left = cellX * gridSize + (gridSize - debugCellSize) / 2;
+  const top = cellY * gridSize + (gridSize - debugCellSize) / 2;
+  drawDebugRect({ x: left, y: top, w: debugCellSize, h: debugCellSize });
+}
+
+function drawDebugRect(rect) {
+  ctx.save();
+  ctx.strokeStyle = 'rgba(255, 0, 0, 0.95)';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(rect.x, rect.y, rect.w, rect.h);
+  ctx.restore();
+}
+
+function drawMinimap() {
+  if (!minimapCtx || !minimapCanvas || worldWidth <= 0 || worldHeight <= 0) return;
+  const w = minimapCanvas.width;
+  const h = minimapCanvas.height;
+  const sx = w / worldWidth;
+  const sy = h / worldHeight;
+  const visibleW = Math.min(worldWidth, Math.max(1, window.innerWidth || viewWidth));
+  const visibleH = Math.min(worldHeight, Math.max(1, window.innerHeight || viewHeight));
+
+  minimapCtx.clearRect(0, 0, w, h);
+  minimapCtx.fillStyle = 'rgba(20, 14, 9, 0.25)';
+  minimapCtx.fillRect(0, 0, w, h);
+  minimapCtx.strokeStyle = 'rgba(255, 255, 255, 0.35)';
+  minimapCtx.lineWidth = 1;
+  minimapCtx.strokeRect(0.5, 0.5, w - 1, h - 1);
+
+  minimapCtx.fillStyle = 'rgba(255, 170, 90, 0.95)';
+  spices.forEach((sp) => {
+    const x = (sp.x * gridSize + gridSize * 0.5) * sx;
+    const y = (sp.y * gridSize + gridSize * 0.5) * sy;
+    minimapCtx.fillRect(x - 1.5, y - 1.5, 3, 3);
+  });
+
+  minimapCtx.fillStyle = 'rgba(232, 116, 61, 0.95)';
+  enemies.forEach((enemy) => {
+    enemy.segments.forEach((seg) => {
+      const x = (seg.x * gridSize + gridSize * 0.5) * sx;
+      const y = (seg.y * gridSize + gridSize * 0.5) * sy;
+      minimapCtx.fillRect(x - 1, y - 1, 2, 2);
+    });
+  });
+
+  minimapCtx.fillStyle = 'rgba(98, 238, 177, 0.95)';
+  worm.forEach((seg, idx) => {
+    const x = (seg.x * gridSize + gridSize * 0.5) * sx;
+    const y = (seg.y * gridSize + gridSize * 0.5) * sy;
+    const size = idx === 0 ? 4 : 3;
+    minimapCtx.fillRect(x - size / 2, y - size / 2, size, size);
+  });
+
+  minimapCtx.strokeStyle = 'rgba(255, 255, 255, 0.85)';
+  minimapCtx.lineWidth = 1.2;
+  minimapCtx.strokeRect(camera.x * sx, camera.y * sy, visibleW * sx, visibleH * sy);
+}
+
 function render() {
   ctx.save();
   if (shake > 0) {
@@ -786,36 +915,89 @@ function render() {
   drawDirectionLine();
   drawSpiceGuide();
   drawEdgeWarning();
+  drawMinimap();
 }
 
 function loop(time) {
-  if (!running) {
-    if (!statusSticky && statusEl && performance.now() > statusUntil) {
-      statusEl.classList.add('hidden');
-    }
-    render();
-    requestAnimationFrame(loop);
-    return;
-  }
-
-  const slowFactor = time < slowMoUntil ? 1.6 : 1;
-  const diagonal = direction.x !== 0 && direction.y !== 0;
-  const diagonalFactor = diagonal ? 1.45 : 1;
-  if (time - lastTime > stepTime * slowFactor * diagonalFactor) {
-    updateDirectionToPointer();
-    step();
-    lastTime = time;
-  }
-  if (time - lastEnemyTime > enemyStepTime * slowFactor) {
-    moveEnemies();
-    resolveEnemyCollisions();
-    lastEnemyTime = time;
+  const delta = rafLastTime === 0 ? (1000 / 60) : Math.max(0, Math.min(64, time - rafLastTime));
+  rafLastTime = time;
+  if (running) {
+    advanceSimulation(delta);
   }
   render();
-  if (!statusSticky && statusEl && performance.now() > statusUntil) {
+  if (!statusSticky && statusEl && simTime > statusUntil) {
     statusEl.classList.add('hidden');
   }
   requestAnimationFrame(loop);
+}
+
+function advanceSimulation(ms) {
+  if (!running) return;
+  const dt = Math.max(0, Math.min(250, ms));
+  simTime += dt;
+  playerAccum += dt;
+  enemyAccum += dt;
+
+  let guard = 0;
+  while (running && guard < 60) {
+    const diagonal = direction.x !== 0 && direction.y !== 0;
+    const slowFactor = simTime < slowMoUntil ? 1.6 : 1;
+    const playerInterval = (stepTime * slowFactor * (diagonal ? 1.45 : 1)) / gameplaySpeedMultiplier;
+    if (playerAccum < playerInterval) break;
+    playerAccum -= playerInterval;
+    updateDirectionToPointer();
+    step();
+    guard += 1;
+  }
+
+  guard = 0;
+  while (running && guard < 60) {
+    const slowFactor = simTime < slowMoUntil ? 1.6 : 1;
+    const enemyInterval = (enemyStepTime * slowFactor) / gameplaySpeedMultiplier;
+    if (enemyAccum < enemyInterval) break;
+    enemyAccum -= enemyInterval;
+    moveEnemies();
+    resolveEnemyCollisions();
+    guard += 1;
+  }
+}
+
+function renderGameToText() {
+  const head = worm[0] || null;
+  const payload = {
+    mode: running ? 'running' : (hasStarted ? 'paused' : 'menu'),
+    coords: 'origin:(0,0) top-left, +x:right, +y:down, units:grid cells',
+    world: { cols, rows, viewWidth, viewHeight, cameraX: camera.x, cameraY: camera.y },
+    player: head ? {
+      head: { x: head.x, y: head.y },
+      direction: { x: direction.x, y: direction.y },
+      nextDirection: { x: nextDirection.x, y: nextDirection.y },
+      length: worm.length,
+    } : null,
+    pointer: { active: pointer.active, x: pointer.x, y: pointer.y },
+    controls: {
+      move: 'arrow-keys-or-wasd',
+      pauseResume: 'space',
+      restart: 'r',
+      fullscreen: 'f',
+    },
+    enemies: enemies.map((enemy) => ({
+      head: { x: enemy.segments[0].x, y: enemy.segments[0].y },
+      length: enemy.segments.length,
+    })),
+    spices: spices.map((sp) => ({
+      x: sp.x,
+      y: sp.y,
+      name: sp.type.name,
+      value: sp.type.value,
+    })),
+    score,
+    best,
+    stepTime,
+    enemyStepTime,
+    slowMoActive: simTime < slowMoUntil,
+  };
+  return JSON.stringify(payload);
 }
 
 function handlePointerMove(event, applyDirection = true) {
@@ -915,6 +1097,14 @@ function startGame() {
   toggleBtn.textContent = 'Pause';
 }
 
+function restartGame() {
+  initAudio();
+  resetGame();
+  running = true;
+  document.body.classList.add('running');
+  toggleBtn.textContent = 'Pause';
+}
+
 function createEnemies(count) {
   const presets = [
     { head: '#3c5a7a', body: '#2c3c55', ring: 'rgba(180, 210, 255, 0.4)' },
@@ -938,10 +1128,19 @@ function createEnemies(count) {
 }
 
 function ensureEnemyCount() {
-  const target = Math.min(8, 3 + Math.floor(score / 80));
+  const target = enemyTargetCount;
   if (enemies.length >= target) return;
-  const add = Math.min(2, target - enemies.length);
+  const add = target - enemies.length;
   enemies.push(...createEnemies(add));
+}
+
+function growEnemyBy(enemy, eatenLength) {
+  if (!enemy || eatenLength <= 0) return;
+  const tail = enemy.segments[enemy.segments.length - 1];
+  if (!tail) return;
+  for (let i = 0; i < eatenLength; i++) {
+    enemy.segments.push({ ...tail });
+  }
 }
 
 function turnRandomly(dir) {
@@ -1004,16 +1203,6 @@ function moveEnemies() {
       enemy.segments.pop();
     }
 
-    const enemyCenter = centerOf(head);
-    const r2 = eatRadiusSq();
-    const spiceIndex = spices.findIndex(sp => distSq(centerOf(sp), enemyCenter) <= r2);
-    if (spiceIndex !== -1) {
-      const spice = spices.splice(spiceIndex, 1)[0];
-      enemy.segments.push({ ...enemy.segments[enemy.segments.length - 1] });
-      sfxSpice();
-      spawnBurst(head.x, head.y, spice.type.color);
-      respawnSpice();
-    }
   });
 }
 
@@ -1041,16 +1230,13 @@ function resolveEnemyCollisions() {
     const enemyLen = enemy.segments.length;
     const playerHead = worm[0];
     const enemyHead = enemy.segments[0];
-    const r2 = eatRadiusSq();
-    const playerCenter = centerOf(playerHead);
-    const enemyHeadCenter = centerOf(enemyHead);
-    const headToHead = distSq(playerCenter, enemyHeadCenter) <= r2;
-    const hitEnemy = enemy.segments.some(seg => distSq(centerOf(seg), playerCenter) <= r2);
+    const headToHead = unitsOverlap(playerHead, enemyHead);
+    const hitEnemy = enemy.segments.some(seg => unitsOverlap(seg, playerHead));
     if (hitEnemy) {
       if (playerLen > enemyLen) {
         score += 20 + enemyLen * 2;
         shake = 10;
-        slowMoUntil = performance.now() + 350;
+        slowMoUntil = simTime + 350;
         sfxEnemyEaten();
         spawnBurst(enemy.segments[0].x, enemy.segments[0].y, enemy.head);
         toRemove.add(idx);
@@ -1061,12 +1247,12 @@ function resolveEnemyCollisions() {
       if (enemyLen >= playerLen) {
         sfxPlayerHit();
         spawnBurst(playerHead.x, playerHead.y, '#d55d3a');
-        slowMoUntil = performance.now() + 400;
+        slowMoUntil = simTime + 400;
         gameOver();
       } else {
         score += 10 + enemyLen;
         shake = 10;
-        slowMoUntil = performance.now() + 350;
+        slowMoUntil = simTime + 350;
         sfxEnemyEaten();
         spawnBurst(enemyHead.x, enemyHead.y, enemy.head);
         toRemove.add(idx);
@@ -1082,24 +1268,30 @@ function resolveEnemyCollisions() {
       const b = enemies[j];
       const aHead = a.segments[0];
       const bHead = b.segments[0];
-      const r2 = eatRadiusSq();
-      const aHeadCenter = centerOf(aHead);
-      const bHeadCenter = centerOf(bHead);
-      const aHitsB = b.segments.some(seg => distSq(centerOf(seg), aHeadCenter) <= r2);
-      const bHitsA = a.segments.some(seg => distSq(centerOf(seg), bHeadCenter) <= r2);
+      const aHitsB = b.segments.some(seg => unitsOverlap(seg, aHead));
+      const bHitsA = a.segments.some(seg => unitsOverlap(seg, bHead));
       if (!aHitsB && !bHitsA) continue;
       if (a.segments.length > b.segments.length) {
+        growEnemyBy(a, b.segments.length);
         spawnBurst(bHead.x, bHead.y, b.head);
         toRemove.add(j);
       } else if (b.segments.length > a.segments.length) {
+        growEnemyBy(b, a.segments.length);
         spawnBurst(aHead.x, aHead.y, a.head);
         toRemove.add(i);
         break;
       } else {
-        spawnBurst(aHead.x, aHead.y, a.head);
-        spawnBurst(bHead.x, bHead.y, b.head);
-        toRemove.add(i);
-        toRemove.add(j);
+        // Equal length: pick one winner so a single enemy remains and "eats" the other.
+        if (Math.random() < 0.5) {
+          growEnemyBy(a, b.segments.length);
+          spawnBurst(bHead.x, bHead.y, b.head);
+          toRemove.add(j);
+        } else {
+          growEnemyBy(b, a.segments.length);
+          spawnBurst(aHead.x, aHead.y, a.head);
+          toRemove.add(i);
+          break;
+        }
         break;
       }
     }
@@ -1108,6 +1300,7 @@ function resolveEnemyCollisions() {
   if (toRemove.size > 0) {
     enemies = enemies.filter((_, idx) => !toRemove.has(idx));
   }
+  ensureEnemyCount();
 }
 
 function spawnBurst(gridX, gridY, color) {
@@ -1148,6 +1341,19 @@ function toggleGame() {
   toggleBtn.textContent = 'Resume';
 }
 
+async function toggleFullscreen() {
+  const target = canvas.parentElement || canvas;
+  if (!document.fullscreenElement) {
+    try {
+      await target.requestFullscreen();
+    } catch (_) {
+      return;
+    }
+  } else {
+    await document.exitFullscreen();
+  }
+}
+
 canvas.addEventListener('pointerdown', (event) => {
   if (event.button !== 0) return;
   initAudio();
@@ -1155,9 +1361,44 @@ canvas.addEventListener('pointerdown', (event) => {
 });
 
 window.addEventListener('keydown', (event) => {
+  const key = event.key.toLowerCase();
+  if (key === 'arrowup' || key === 'w') {
+    event.preventDefault();
+    setDirection({ x: 0, y: -1 }, true);
+    pointer.active = false;
+    return;
+  }
+  if (key === 'arrowdown' || key === 's') {
+    event.preventDefault();
+    setDirection({ x: 0, y: 1 }, true);
+    pointer.active = false;
+    return;
+  }
+  if (key === 'arrowleft' || key === 'a') {
+    event.preventDefault();
+    setDirection({ x: -1, y: 0 }, true);
+    pointer.active = false;
+    return;
+  }
+  if (key === 'arrowright' || key === 'd') {
+    event.preventDefault();
+    setDirection({ x: 1, y: 0 }, true);
+    pointer.active = false;
+    return;
+  }
   if (event.key === ' ') {
     event.preventDefault();
     toggleGame();
+    return;
+  }
+  if (key === 'r') {
+    event.preventDefault();
+    restartGame();
+    return;
+  }
+  if (key === 'f') {
+    event.preventDefault();
+    toggleFullscreen();
   }
 });
 
@@ -1195,6 +1436,28 @@ toggleBtn.addEventListener('click', () => {
 
 preloadImages();
 resizeCanvas();
+window.addEventListener('fullscreenchange', () => {
+  setTimeout(resizeCanvas, 0);
+});
 window.addEventListener('resize', resizeCanvas);
 resetGame();
+window.render_game_to_text = renderGameToText;
+window.advanceTime = (ms) => {
+  const total = Math.max(0, Number(ms) || 0);
+  if (total === 0) {
+    render();
+    return;
+  }
+  const fixedStep = 1000 / 60;
+  let remaining = total;
+  while (remaining > 0) {
+    const chunk = Math.min(fixedStep, remaining);
+    advanceSimulation(chunk);
+    remaining -= chunk;
+  }
+  render();
+  if (!statusSticky && statusEl && simTime > statusUntil) {
+    statusEl.classList.add('hidden');
+  }
+};
 requestAnimationFrame(loop);

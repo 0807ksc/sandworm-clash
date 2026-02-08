@@ -31,9 +31,9 @@ body {
 .topbar {
   position: fixed;
   top: 16px;
-  left: 16px;
-  right: 160px;
-  z-index: 20;
+  left: clamp(220px, 28vw, 360px);
+  right: 260px;
+  z-index: 30;
   display: flex;
   align-items: center;
   justify-content: flex-start;
@@ -55,17 +55,38 @@ body {
 .hudbar {
   position: fixed;
   top: 16px;
-  right: 16px;
+  left: 16px;
   z-index: 25;
   display: grid;
   gap: 8px;
-  text-align: right;
+  text-align: left;
   padding: 12px 14px;
   border-radius: 14px;
   background: rgba(255, 244, 219, 0.88);
   backdrop-filter: blur(10px);
   font-weight: 600;
   border: 1px solid rgba(140, 100, 60, 0.25);
+}
+
+.minimap {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 24;
+  padding: 8px;
+  border-radius: 12px;
+  background: rgba(25, 18, 12, 0.35);
+  backdrop-filter: blur(4px);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  pointer-events: none;
+}
+
+.minimap canvas {
+  display: block;
+  width: 220px;
+  height: 150px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.15);
 }
 
 .hudbar button {
@@ -191,4 +212,12 @@ canvas {
 
 @media (min-width: 900px) {
   .controls { display: none; }
+}
+
+@media (max-width: 980px) {
+  .topbar {
+    left: 16px;
+    right: 16px;
+    top: 100px;
+  }
 }
